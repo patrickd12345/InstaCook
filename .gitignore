@@ -1,3 +1,29 @@
+# dependencies
+node_modules/
+
+# next.js
+.next/
+out/
+
+# env
+.env*.local
+
+# logs / debug
+npm-debug.log*
+pnpm-debug.log*
+*.log
+
+# vitest
+coverage/
+
+# typescript incremental
+*.tsbuildinfo
+
+# os / ide
+.DS_Store
+*.swp
+
+# legacy python (removed stack)
 __pycache__/
 *.pyc
 *.pyo
@@ -5,3 +31,4 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .venv/
+.vercel

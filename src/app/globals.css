@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #0f1419;
+  --surface: #1a222c;
+  --text: #e8eef4;
+  --muted: #8b9aab;
+  --accent-from: #3b82f6;
+  --accent-to: #8b5cf6;
+}
+
+body {
+  color: var(--text);
+  background: radial-gradient(
+      ellipse 120% 80% at 50% -20%,
+      color-mix(in srgb, var(--accent-from) 25%, transparent),
+      transparent
+    ),
+    var(--bg);
+  min-height: 100vh;
+}
