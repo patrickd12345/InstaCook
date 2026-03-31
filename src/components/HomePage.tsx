@@ -35,6 +35,10 @@ type RecipeSearchResponse = {
   warnings: string[];
 };
 
+type RecipeSearchErrorResponse = RecipeSearchResponse & {
+  detail?: string;
+};
+
 const MEALS: MealType[] = ["breakfast", "lunch", "dinner"];
 
 function todayIso() {
@@ -68,6 +72,13 @@ export function HomePage() {
   const selectedRecipes = useMemo(
     () => recipes.filter((r) => selectedIds.has(r.id)),
     [recipes, selectedIds],
+  );
+  const webSearchConfigWarning = useMemo(
+    () =>
+      searchResult?.warnings.find((warning) =>
+        warning.includes("Web search is not configured."),
+      ) ?? null,
+    [searchResult],
   );
 
   useEffect(() => {
@@ -173,13 +184,41 @@ export function HomePage() {
                   run("search", async () => {
                     setSearchError(null);
                     setSearchResult(null);
-                    const res = await fetch("/api/recipes/search", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ query: searchQuery }),
-                    });
+                    /** Server may run several AI calls; cap wait so the UI does not hang forever. */
+                    const searchClientTimeoutMs = 300_000;
+                    let res: Response;
+                    try {
+                      res = await fetch("/api/recipes/search", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ query: searchQuery }),
+                        signal: AbortSignal.timeout(searchClientTimeoutMs),
+                      });
+                    } catch (e) {
+                      const aborted =
+                        (typeof DOMException !== "undefined" &&
+                          e instanceof DOMException &&
+                          e.name === "AbortError") ||
+                        (e instanceof Error && e.name === "AbortError");
+                      if (aborted) {
+                        setSearchError(
+                          `Search timed out after ${searchClientTimeoutMs / 1000}s. Try again, or lower RECIPE_NORMALIZE_MAX_PAGES / RECIPE_AI_TIMEOUT_MS on the server.`,
+                        );
+                        return;
+                      }
+                      setSearchError("Search failed (network error).");
+                      return;
+                    }
                     if (res.status === 404) {
-                      const body = (await res.json()) as { detail?: string };
+                      const body =
+                        (await res.json()) as RecipeSearchErrorResponse;
+                      setSearchResult({
+                        query: body.query,
+                        local: body.local,
+                        web: body.web,
+                        recipes: body.recipes,
+                        warnings: body.warnings,
+                      });
                       setSearchError(
                         body.detail ??
                           "No recipes matched in catalog, web, or normalization.",
@@ -203,6 +242,17 @@ export function HomePage() {
             )}
             {searchResult && (
               <div className="mt-4 space-y-4 text-sm">
+                {webSearchConfigWarning && (
+                  <div className="rounded-lg border border-amber-400/40 bg-amber-950/40 px-3 py-3 text-amber-100">
+                    <p className="font-medium">
+                      Web recipe search is not configured.
+                    </p>
+                    <p className="mt-1 text-sm text-amber-100/90">
+                      Add `GOOGLE_CSE_API_KEY` and `GOOGLE_CSE_ID` to `.env.local`
+                      to search the web for recipes like spaghetti.
+                    </p>
+                  </div>
+                )}
                 {searchResult.warnings.length > 0 && (
                   <ul className="space-y-1 rounded-lg border border-amber-500/30 bg-amber-950/30 px-3 py-2 text-amber-100/90">
                     {searchResult.warnings.map((w, i) => (

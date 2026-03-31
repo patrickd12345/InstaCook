@@ -1,7 +1,32 @@
 import { generateObject } from "ai";
 
 import { getRecipeSearchModel } from "@/lib/ai-model";
+
+const DEFAULT_AI_TIMEOUT_MS = 30_000;
+
+function getRecipeAiTimeoutMs(): number {
+  const raw = process.env.RECIPE_AI_TIMEOUT_MS?.trim();
+  const n = raw ? Number.parseInt(raw, 10) : DEFAULT_AI_TIMEOUT_MS;
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_AI_TIMEOUT_MS;
+  return Math.min(n, 300_000);
+}
+
+function recipeAiAbortSignal(): AbortSignal {
+  return AbortSignal.timeout(getRecipeAiTimeoutMs());
+}
+
+function isAbortError(e: unknown): boolean {
+  if (e instanceof DOMException && e.name === "AbortError") return true;
+  if (e instanceof Error) {
+    if (e.name === "AbortError" || e.name === "TimeoutError") return true;
+    if ("code" in e && (e as NodeJS.ErrnoException).code === "ABORT_ERR")
+      return true;
+  }
+  const msg = e instanceof Error ? e.message : String(e);
+  return /aborted|abort|timeout/i.test(msg);
+}
 import type { ExtractedRecipePagePayload } from "@/lib/recipe-page-extract";
+import type { WebRecipeHit } from "@/lib/recipe-web-search";
 import {
   canonicalRecipeModelOutputSchema,
   canonicalRecipeSchema,
@@ -52,6 +77,25 @@ User search query (context only): ${JSON.stringify(userQuery)}
 ${extracted.contentExcerpt}`;
 }
 
+function buildSearchHitPrompt(hit: WebRecipeHit, userQuery: string): string {
+  return `You are generating a recipe card to answer a user's search.
+Use your general cooking knowledge AND the web search snippet below.
+
+Rules:
+- Provide a best-effort complete recipe even if the snippet is sparse.
+- If uncertain, choose common, reasonable defaults for ingredients and steps.
+- Mark uncertainty via "confidence" (0 to 1). Use a low value if guessing.
+- "raw" should be a readable ingredient line; "item" is the core food name.
+- "steps" must be practical cooking steps; keep them concise.
+- "extraction_warnings" must mention when details are inferred or guessed.
+- Do NOT include source_url or source_name in your answer; they are set by the server.
+
+User search query: ${JSON.stringify(userQuery)}
+Search result title: ${JSON.stringify(hit.title)}
+Search result snippet: ${JSON.stringify(hit.snippet)}
+Search result URL (reference only): ${hit.url}`;
+}
+
 export async function normalizeExtractedPage(args: {
   extracted: ExtractedRecipePagePayload;
   userQuery: string;
@@ -71,6 +115,8 @@ export async function normalizeExtractedPage(args: {
       model,
       schema: canonicalRecipeModelOutputSchema,
       prompt: buildNormalizePrompt(args.extracted, args.userQuery),
+      abortSignal: recipeAiAbortSignal(),
+      maxRetries: 0,
     });
 
     parsed = mergeAndValidateCanonicalRecipe(
@@ -79,6 +125,61 @@ export async function normalizeExtractedPage(args: {
       args.sourceName,
     );
   } catch (e) {
+    if (isAbortError(e)) {
+      warnings.push(
+        `AI normalization timed out after ${getRecipeAiTimeoutMs()}ms (set RECIPE_AI_TIMEOUT_MS or check Ollama is responding).`,
+      );
+      return { recipe: null, warnings };
+    }
+    const msg = e instanceof Error ? e.message : String(e);
+    warnings.push(`AI normalization failed: ${msg.slice(0, 240)}`);
+    return { recipe: null, warnings };
+  }
+
+  if (!parsed.success) {
+    const issues = parsed.error.flatten();
+    warnings.push(
+      `Normalized recipe failed validation: ${JSON.stringify(issues.fieldErrors).slice(0, 300)}`,
+    );
+    return { recipe: null, warnings };
+  }
+
+  return { recipe: parsed.data, warnings };
+}
+
+export async function normalizeSearchHit(args: {
+  hit: WebRecipeHit;
+  userQuery: string;
+}): Promise<NormalizePageResult> {
+  const warnings: string[] = [];
+  const model = getRecipeSearchModel();
+  if (!model) {
+    warnings.push("AI normalization skipped: no model configured.");
+    return { recipe: null, warnings };
+  }
+
+  let parsed: ReturnType<typeof canonicalRecipeSchema.safeParse>;
+  try {
+    const { object } = await generateObject({
+      model,
+      schema: canonicalRecipeModelOutputSchema,
+      prompt: buildSearchHitPrompt(args.hit, args.userQuery),
+      abortSignal: recipeAiAbortSignal(),
+      maxRetries: 0,
+    });
+
+    parsed = mergeAndValidateCanonicalRecipe(
+      object,
+      args.hit.url,
+      args.hit.displayLink || new URL(args.hit.url).hostname,
+    );
+  } catch (e) {
+    if (isAbortError(e)) {
+      warnings.push(
+        `AI normalization timed out after ${getRecipeAiTimeoutMs()}ms (set RECIPE_AI_TIMEOUT_MS or check Ollama is responding).`,
+      );
+      return { recipe: null, warnings };
+    }
     const msg = e instanceof Error ? e.message : String(e);
     warnings.push(`AI normalization failed: ${msg.slice(0, 240)}`);
     return { recipe: null, warnings };

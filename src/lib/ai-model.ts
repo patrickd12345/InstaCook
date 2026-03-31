@@ -4,7 +4,8 @@ import type { LanguageModel } from "ai";
 /**
  * Resolves a chat model for recipe search assistance.
  * Priority: Ollama (local) → Vercel AI Gateway → OpenAI direct.
- * Set only the credentials you use; omit the rest.
+ * Set `OLLAMA_BASE_URL` in `.env.local` for free local inference; omit it on
+ * Vercel (or anywhere without Ollama) so `VERCEL_AI_GATEWAY_API_KEY` / `VERCEL_VIRTUAL_KEY` is used.
  */
 export function getRecipeSearchModel(): LanguageModel | null {
   const ollamaBase = process.env.OLLAMA_BASE_URL?.trim();
@@ -16,11 +17,14 @@ export function getRecipeSearchModel(): LanguageModel | null {
       baseURL,
       apiKey: process.env.OLLAMA_API_KEY?.trim() ?? "ollama",
     });
-    const id = process.env.OLLAMA_MODEL?.trim() ?? "llama3.2";
+    /** Ollama expects a tag (e.g. `mistral:latest`). Run `ollama pull mistral` if missing. */
+    const id = process.env.OLLAMA_MODEL?.trim() ?? "mistral:latest";
     return openai(id);
   }
 
-  const gatewayKey = process.env.VERCEL_AI_GATEWAY_API_KEY?.trim();
+  const gatewayKey =
+    process.env.VERCEL_AI_GATEWAY_API_KEY?.trim() ??
+    process.env.VERCEL_VIRTUAL_KEY?.trim();
   if (gatewayKey) {
     const openai = createOpenAI({
       baseURL:

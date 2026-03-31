@@ -13,6 +13,8 @@ export type WebRecipeHit = {
   displayLink: string;
 };
 
+type SearchResult = { hits: WebRecipeHit[]; warning?: string };
+
 function parseSitesEnv(): string[] | null {
   const raw = process.env.RECIPE_SEARCH_SITES?.trim();
   if (!raw) return null;
@@ -64,21 +66,23 @@ type GoogleCseItem = {
   displayLink?: string;
 };
 
+type BingRssItem = {
+  title: string;
+  link: string;
+  snippet: string;
+};
+
 /**
  * Search the web via Google Custom Search JSON API (configure CSE to search the whole web;
  * we restrict with site: in the query).
  */
 export async function searchPublisherRecipes(
   query: string,
-): Promise<{ hits: WebRecipeHit[]; warning?: string }> {
+): Promise<SearchResult> {
   const key = process.env.GOOGLE_CSE_API_KEY?.trim();
   const cx = process.env.GOOGLE_CSE_ID?.trim();
   if (!key || !cx) {
-    return {
-      hits: [],
-      warning:
-        "Web search is not configured. Set GOOGLE_CSE_API_KEY and GOOGLE_CSE_ID.",
-    };
+    return searchPublisherRecipesWithBingFallback(query);
   }
 
   const sites = parseSitesEnv() ?? [...DEFAULT_RECIPE_SEARCH_SITES];
@@ -124,4 +128,117 @@ export async function searchPublisherRecipes(
     }));
 
   return { hits };
+}
+
+function decodeXmlEntities(text: string): string {
+  return text
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+function extractXmlTag(block: string, tag: string): string {
+  const match = block.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "i"));
+  return match?.[1]?.trim() ?? "";
+}
+
+export function parseBingRssItems(xml: string): BingRssItem[] {
+  const itemBlocks = xml.match(/<item>[\s\S]*?<\/item>/gi) ?? [];
+  return itemBlocks
+    .map((block) => ({
+      title: decodeXmlEntities(extractXmlTag(block, "title")),
+      link: decodeXmlEntities(extractXmlTag(block, "link")),
+      snippet: decodeXmlEntities(extractXmlTag(block, "description")),
+    }))
+    .filter((item) => item.title && item.link);
+}
+
+function mapBingRssItem(item: BingRssItem): WebRecipeHit {
+  let displayLink = "";
+  try {
+    displayLink = new URL(item.link).hostname;
+  } catch {
+    displayLink = "";
+  }
+  return {
+    title: item.title,
+    url: item.link,
+    snippet: item.snippet,
+    displayLink,
+  };
+}
+
+async function fetchBingRss(query: string): Promise<SearchResult> {
+  const url = new URL("https://www.bing.com/search");
+  url.searchParams.set("format", "rss");
+  url.searchParams.set("q", query);
+
+  let res: Response;
+  try {
+    res = await fetch(url.toString(), {
+      cache: "no-store",
+      headers: { "User-Agent": "Mozilla/5.0 InstaCook/1.0" },
+    });
+  } catch {
+    return { hits: [], warning: "Web search request failed (network error)." };
+  }
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    return {
+      hits: [],
+      warning: `Web search failed (${res.status}). ${text.slice(0, 200)}`,
+    };
+  }
+
+  const xml = await res.text();
+  const hits = parseBingRssItems(xml)
+    .map(mapBingRssItem)
+    .filter((hit) => isTrustedRecipeUrl(hit.url));
+
+  return { hits };
+}
+
+async function searchPublisherRecipesWithBingFallback(
+  query: string,
+): Promise<SearchResult> {
+  const warning =
+    "Web search is using the built-in fallback because GOOGLE_CSE_API_KEY and GOOGLE_CSE_ID are not set.";
+  const broad = await fetchBingRss(`${query.trim()} recipe`);
+  const trustedHosts = getTrustedRecipeHosts();
+  const seen = new Set<string>();
+  const hits: WebRecipeHit[] = [];
+
+  for (const hit of broad.hits) {
+    if (seen.has(hit.url)) continue;
+    seen.add(hit.url);
+    hits.push(hit);
+  }
+
+  for (const host of trustedHosts) {
+    if (hits.length >= 10) break;
+    const result = await fetchBingRss(`${query.trim()} recipe site:${host}`);
+    for (const hit of result.hits) {
+      if (seen.has(hit.url)) continue;
+      seen.add(hit.url);
+      hits.push(hit);
+      if (hits.length >= 10) break;
+    }
+  }
+
+  if (hits.length > 0) {
+    return {
+      hits: hits.slice(0, 10),
+      warning,
+    };
+  }
+
+  return {
+    hits: [],
+    warning:
+      broad.warning ??
+      "Web search fallback found no trusted recipe results. Configure GOOGLE_CSE_API_KEY and GOOGLE_CSE_ID for better coverage.",
+  };
 }

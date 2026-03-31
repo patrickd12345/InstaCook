@@ -2,8 +2,9 @@ import { isTrustedRecipeUrl } from "@/lib/recipe-web-search";
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 15_000;
+/** Browser-like UA; many publishers return 403 for obvious bot identifiers. */
 const USER_AGENT =
-  "InstaCook/1.0 (recipe search; +https://github.com/)";
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 export type RecipePageFetchOk = {
   ok: true;
@@ -65,8 +66,15 @@ export async function fetchTrustedRecipePage(
       redirect: "follow",
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       headers: {
-        Accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+        Accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
         "User-Agent": USER_AGENT,
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Upgrade-Insecure-Requests": "1",
       },
     });
   } catch (e) {

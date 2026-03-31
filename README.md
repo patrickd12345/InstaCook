@@ -33,7 +33,7 @@ Production is hosted on **Vercel** under team `patrick-duchesneaus-projects`, pr
 3. **Production secrets** — In the [Vercel project → Settings → Environment Variables](https://vercel.com/patrick-duchesneaus-projects/instacook/settings/environment-variables), add the same keys as in [`.env.example`](./.env.example) for **Production** (and Preview if you want search/AI on preview URLs). At minimum for full search + normalization on the live site:
 
    - `GOOGLE_CSE_API_KEY`, `GOOGLE_CSE_ID` — publisher web search  
-   - `VERCEL_AI_GATEWAY_API_KEY` — recipe normalization on Vercel (recommended)  
+   - `VERCEL_AI_GATEWAY_API_KEY` or `VERCEL_VIRTUAL_KEY` — recipe normalization in production (do **not** set `OLLAMA_BASE_URL` on Vercel unless you intentionally use a reachable remote Ollama)  
    - Optional: `OPENAI_API_KEY`, `RECIPE_SEARCH_SITES`, `RECIPE_NORMALIZE_MAX_PAGES`
 
    Redeploy after changing env vars (Deployments → … → Redeploy, or push a commit).
@@ -60,16 +60,26 @@ Copy [`.env.example`](./.env.example) to `.env.local` and fill in what you need.
 | -------- | ------- |
 | `GOOGLE_CSE_API_KEY`, `GOOGLE_CSE_ID` | [Google Custom Search JSON API](https://developers.google.com/custom-search/v1/overview) — powers web results from publisher sites (restricted via `site:` in the query). |
 | `RECIPE_SEARCH_SITES` | Optional comma-separated domains. Defaults include Bon Appétit, Ricardo, Serious Eats, Food Network. |
-| `OLLAMA_BASE_URL` | If set, recipe AI uses your local Ollama server (`…/v1` added automatically if omitted). |
-| `VERCEL_AI_GATEWAY_API_KEY` | On Vercel (or any host), use the [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) OpenAI-compatible endpoint for recipe normalization. |
-| `OPENAI_API_KEY` | Optional fallback: direct OpenAI API instead of Ollama/Gateway. |
+| `OLLAMA_BASE_URL` | **First choice.** Local Ollama (`…/v1` added automatically if omitted). Keeps normalization free on your machine. |
+| `OLLAMA_MODEL` | Optional. Defaults to `mistral:latest` if unset. Use `ollama pull mistral` (or another tag from `ollama list`). |
+| `VERCEL_AI_GATEWAY_API_KEY` or `VERCEL_VIRTUAL_KEY` | **Second choice** when Ollama is not configured (e.g. `instacook.bookiji.com`). Omit `OLLAMA_BASE_URL` in production so the gateway is used. |
+| `OPENAI_API_KEY` | **Third choice:** direct OpenAI API if neither Ollama nor gateway is set. |
 | `RECIPE_NORMALIZE_MAX_PAGES` | Optional. Max trusted web URLs to fetch and normalize per search (default `4`, cap `5`). |
+| `RECIPE_AI_TIMEOUT_MS` | Optional. Per–AI-call timeout in ms so Ollama/Mistral cannot hang forever (default `30000`, max `300000`). |
 
-Without Google CSE keys, search still works against the **built-in catalog** only. Without any AI keys, web and catalog results still appear; the API adds a warning that structured recipe normalization was skipped (no `recipes[]` from the web unless the model is configured).
+Without Google CSE keys, search still uses the **catalog** plus a **limited Bing RSS fallback** for `web` hits (with a warning). Without any AI keys, structured `recipes[]` from the web are skipped; with Ollama or gateway, normalization runs when fetch + model succeed.
 
 ## Troubleshooting
 
 **`Cannot find module '.../node_modules/next/dist/bin/next'`** — `node_modules` is missing or incomplete (often after an interrupted install). Run `pnpm install` again. On Windows, if deleting `node_modules` fails because paths are too long, remove it from Command Prompt with extended paths, for example: `rmdir /s /q "\\?\C:\full\path\to\InstaCook\node_modules"`, then run `pnpm install`.
+
+**“Web search is using the built-in fallback…”** — Add `GOOGLE_CSE_API_KEY` and `GOOGLE_CSE_ID` from [Google Programmable Search](https://programmablesearchengine.google.com/) (enable the Custom Search API in Google Cloud). Results are better than the RSS fallback.
+
+**`Fetch … HTTP 403`** — Many publishers block server-side scraping. The app uses browser-like headers and prefers single-recipe URLs over gallery pages (`/photos/…`). Google CSE often returns recipe pages that fetch more reliably than the fallback.
+
+**`AI normalization failed: model '…' not found` (Ollama)** — Install the model, e.g. `ollama pull mistral`, or set `OLLAMA_MODEL` in `.env.local` to a name from `ollama list` (default is `mistral:latest`).
+
+**Search spins forever / no error** — Each `generateObject` call now aborts after `RECIPE_AI_TIMEOUT_MS` (default 30s). The browser search request aborts after 5 minutes. If Ollama is slow, raise the timeout or lower `RECIPE_NORMALIZE_MAX_PAGES`.
 
 ## Scripts
 
